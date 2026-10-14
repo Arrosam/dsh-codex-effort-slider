@@ -1,5 +1,7 @@
 # dsh-codex-effort-slider
 
+[![npm version](https://img.shields.io/npm/v/dsh-codex-effort-slider?color=8b5cf6&label=npm)](https://www.npmjs.com/package/dsh-codex-effort-slider) [![npm downloads](https://img.shields.io/npm/dm/dsh-codex-effort-slider?color=4d93f8&label=downloads)](https://www.npmjs.com/package/dsh-codex-effort-slider) [![license](https://img.shields.io/badge/license-MIT-4d93f8)](./LICENSE)
+
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）用的 **Codex 风格推理等级滑条**。
 
 **一档一色、越往右越"通电"**：填充从蓝渐变到紫罗兰，高档位亮起紫色星云与星尘粒子，
@@ -45,7 +47,21 @@
 
 ## 安装
 
-> 不想 clone 的话,直接下载打包好的 zip:[**Releases → dsh-codex-effort-slider-1.0.0.zip**](https://github.com/Microqian2th/dsh-codex-effort-slider/releases/latest)。
+### 首选:npm 一条命令（已发布到 registry）
+
+```powershell
+# 非 desktop profile
+dsh plugin --profile <你的 profile> add dsh-codex-effort-slider
+```
+
+> **DSH Desktop 用户**：桌面版的 profile 由 Electron 独占管理，命令行装不了它 —— 请走
+> **设置 → 插件 → 添加插件**，在输入框里填 **`dsh-codex-effort-slider`**（包名，现在直接走 npm），
+> 或填 `github:Microqian2th/dsh-codex-effort-slider`，点安装，**完全退出并重开** DSH Desktop。
+> 装出来的就是上面那组真机截图的样子。
+
+不想用 npm 也没问题 —— 下面两条路一样有效。
+
+> 直接下载打包好的 zip：[**Releases → 最新版**](https://github.com/Microqian2th/dsh-codex-effort-slider/releases/latest)。
 
 **只走 DSH Desktop 自己的插件面板**——命令行装不了 `desktop` profile：
 
@@ -89,7 +105,7 @@ npm run pack      # = powershell -NoProfile -ExecutionPolicy Bypass -File pack-d
 1. **面板安装（推荐）**：DSH Desktop → **设置 → 插件 → 添加插件**，填三者之一：
    - **本地目录路径**（解开 zip 后那一层目录）
    - **`github:<用户名>/<仓库>`**（面板会先做一次 GitHub 连接检查，再交给 pnpm 拉取）
-   - **npm 包名**（走 registry；DSH 默认已配 npm 镜像作为回退）
+   - **npm 包名 `dsh-codex-effort-slider`**（**已发布**，走 registry；DSH 默认已配 npm 镜像作为回退）
 2. **命令行**（**只有非 desktop profile 能这么装**）：
    ```powershell
    dsh plugin --profile tui add link:"<插件的绝对路径>"
@@ -119,7 +135,7 @@ npm run pack      # = powershell -NoProfile -ExecutionPolicy Bypass -File pack-d
   加两个官方 class；哈希前缀不依赖（收起态那段档位文字是**按文字**认的）。官方若改语义，插件
   **静默不生效**（fail-open），不会把官方界面改坏。本插件**不注册任何宿主钩子、不注入消息**
   （测试里有 `ctx.on` 监视断言守着这一点）。
-- 许可 MIT（见 `LICENSE`）。`package.json` 里现在是 `"private": true`（**要发 npm 得先删掉这一行**）。
+- 许可 MIT（见 `LICENSE`）。`package.json` 已去掉 `"private"`，并发布在 npm 上：**`dsh-codex-effort-slider`**。
 
 ## 它怎么工作（两半）
 
