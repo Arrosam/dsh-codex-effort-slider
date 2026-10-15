@@ -72,7 +72,49 @@ async function setup(options = {}) {
     host,
     entry,
     internals: bundle.plugin.__internals,
+    // 引擎是**逐帧**推进的，测试必须显式泵帧才能看到位置变化。
+    flushFrames: bundle.flushFrames,
+    advanceClock: bundle.advanceClock,
+    clockNow: bundle.clockNow,
   };
+}
+
+/**
+ * 推进引擎到收敛。
+ *
+ * ⚠️ 两点关键：
+ *  1. 必须**每帧之间让渲染落定**：引擎通过 setDraft 触发 React 重渲染，而测试台
+ *     的渲染是 queueMicrotask 批处理的 —— 一次泵多帧而不落定微任务，读到的还是旧 DOM。
+ *  2. 落定必须用**微任务**而不是 setTimeout：引擎时间走的是假时钟（flushFrames 推进），
+ *     但真实墙上时间若被 setTimeout 拖长，`COMMIT_THROTTLE_MS`(120ms) 的定时器会
+ *     在拖动中途触发、把"已生效档位"改掉，让"拖动中席按钮不乱跳"这类断言变得不确定。
+ */
+async function runFrames(ctx, frames = 90, dtMs = 16) {
+  for (let i = 0; i < frames; i += 1) {
+    const executed = ctx.flushFrames(1, dtMs);
+    for (let m = 0; m < 6; m += 1) await Promise.resolve(); // 只落微任务，不推进墙上时间
+    if (executed === 0) break; // 引擎已停（收敛或未启动）
+  }
+}
+
+/** 按下并把引擎跑到收敛（等价于"按下 → 等它追到位"）。 */
+async function pressAndSettle(ctx, clientX) {
+  track(ctx.react).fire("onPointerDown", { clientX, pointerId: 1 });
+  await runFrames(ctx);
+  await settle();
+}
+
+/** 松手并把吸附动画跑到收敛。 */
+async function releaseAndSettle(ctx) {
+  track(ctx.react).fire("onPointerUp", {});
+  await runFrames(ctx);
+  await settle();
+}
+
+/** 按下但**不**等收敛（用于观察拖动中的中间态）。只落微任务，不推进墙上时间。 */
+async function pressOnly(ctx, clientX) {
+  track(ctx.react).fire("onPointerDown", { clientX, pointerId: 1 });
+  for (let m = 0; m < 6; m += 1) await Promise.resolve();
 }
 
 /** 现查轨道节点并给确定几何（假 DOM 不做布局）。 */
@@ -160,91 +202,23 @@ section("2b. 顶头适配：旋钮与滑条同高，且两端都不越界");
   ok(trackCss.indexOf(`height:${internals.TRACK_HEIGHT}px`) > 0, "[2b] 轨道高度与旋钮直径用同一组常量");
 
   // 指针映射与视觉几何一致：拖到最左必定命中第一档（而不是因为内缩差一点点）
-  const node = track(react, 0, 300);
-  node.fire("onPointerDown", { clientX: 0, pointerId: 1 }); // 远在左端之外
-  node.fire("onPointerUp", {});
-  await settle();
-  eq(react.find("knob").style.left, internals.knobOffsetOf(0), "[2b] 拖到最左 → 旋钮贴左端圆角内（圆心不越界）");
-  eq(host.selects[host.selects.length - 1].reasoningEffort, "off", "[2b] 最左端映射到第一档");
+  {
+    const d = await setup();
+    track(d.react, 0, 300).fire("onPointerDown", { clientX: 0, pointerId: 1 }); // 远在左端之外
+    await pressAndSettle(d, 0);
+    releaseAndSettle(d);
+    eq(d.react.find("knob").style.left, internals.knobOffsetOf(0), "[2b] 拖到最左 → 旋钮贴左端圆角内（圆心不越界）");
+    eq(d.host.selects[d.host.selects.length - 1].reasoningEffort, "off", "[2b] 最左端映射到第一档");
+  }
 
   // 右端同理
-  track(react, 0, 300).fire("onPointerDown", { clientX: 300, pointerId: 1 });
-  track(react).fire("onPointerUp", {});
-  await settle();
-  eq(react.find("knob").style.left, internals.knobOffsetOf(1), "[2b] 拖到最右 → 旋钮贴右端圆角内（不会被菜单裁掉）");
-  eq(host.selects[host.selects.length - 1].reasoningEffort, "max", "[2b] 最右端映射到最高档");
-}
-
-section("2c. 贴最左时左端不露出直边（圆角不随宽度退化）");
-{
-  const { internals, react, host } = await setup();
-  const R = internals.KNOB_RADIUS;
-  const H = internals.TRACK_HEIGHT;
-
-  /** 取某条规则的声明文本（`选择器{...}` 里的大括号内容）。 */
-  function declsOf(selector) {
-    const at = internals.CSS.indexOf(selector + "{");
-    if (at < 0) return null;
-    return internals.CSS.slice(at + selector.length + 1, internals.CSS.indexOf("}", at));
+  {
+    const d = await setup();
+    await pressAndSettle(d, 300);
+    releaseAndSettle(d);
+    eq(d.react.find("knob").style.left, internals.knobOffsetOf(1), "[2b] 拖到最右 → 旋钮贴右端圆角内（不会被菜单裁掉）");
+    eq(d.host.selects[d.host.selects.length - 1].reasoningEffort, "max", "[2b] 最右端映射到最高档");
   }
-
-  /** 解析 border-radius 简写 → {tl,tr,br,bl}（px 或 0）。 */
-  function radiiOf(decls) {
-    const m = /border-radius:([^;}]+)/.exec(decls);
-    if (m === null) throw new Error("规则里没有 border-radius：" + decls);
-    const raw = m[1].trim().split(/\s+/);
-    // CSS 简写里 0 允许不带单位
-    if (!raw.every((s) => s === "0" || /^[\d.]+px$/.test(s))) throw new Error("只支持 px 圆角，实际：" + m[1]);
-    const v = raw.map((s) => (s === "0" ? 0 : parseFloat(s)));
-    return { tl: v[0], tr: v[1] ?? v[0], br: v[2] ?? v[0], bl: v[3] ?? v[1] ?? v[0] };
-  }
-
-  /**
-   * CSS 角半径收缩规则：**一条边上两个角的半径之和不能超过这条边**，
-   * 超了就四个角按同一因子等比缩小。这正是「贴最左时圆角 14 → 7、露出直边」的成因：
-   * 填充盒贴左只有 14px 宽，14 ÷ (999+999) 把半径压成了 7。
-   */
-  function resolveRadii(r, w, h) {
-    let f = 1;
-    for (const [len, sum] of [[w, r.tl + r.tr], [h, r.tr + r.br], [w, r.bl + r.br], [h, r.tl + r.bl]]) {
-      if (sum > 0) f = Math.min(f, len / sum);
-    }
-    return { f, tl: r.tl * f, tr: r.tr * f, br: r.br * f, bl: r.bl * f };
-  }
-
-  /** 某位置下填充层盒子的宽度（px）：与 knobOffsetOf 同源 = 半径 + pct × 行程。 */
-  const TRACK_W = 300;
-  const boxW = (pct) => R + pct * (TRACK_W - 2 * R);
-
-  for (const selector of [".ces-fill", ".ces-energy", ".ces-stars"]) {
-    const decls = declsOf(selector);
-    ok(decls !== null, `[2c] ${selector} 规则存在`);
-    const r = radiiOf(decls);
-    // 关键不变量：**任何宽度**下左端都必须是半径 = 旋钮半径 的真半圆
-    for (const pct of [0, 0.02, 0.071, 1 / 3, 1]) {
-      const out = resolveRadii(r, boxW(pct), H);
-      near(out.tl, R, `[2c] ${selector} pct=${pct}：左端半径 = 旋钮半径 ${R}px（不被宽度压扁）`, 0.01);
-    }
-    // 右端直角：右边界永远落在旋钮圆心、再向右被旋钮盖住一个半径，所以不需要圆角；
-    // 而「不做右圆角」正是让收缩规则不再被触发的原因。
-    const out0 = resolveRadii(r, boxW(0), H);
-    eq(out0.tr, 0, `[2c] ${selector}：右上角是直角（藏在旋钮底下）`);
-    eq(out0.br, 0, `[2c] ${selector}：右下角是直角`);
-    ok(decls.indexOf("border-radius:999px") < 0, `[2c] ${selector} 不再用 999px（窄盒子上会退化成 ${R / 2}px）`);
-  }
-
-  // 右端直角为什么安全：填充右边界恒等于旋钮圆心，旋钮再向右多盖一个半径
-  const node = track(react, 0, TRACK_W);
-  node.fire("onPointerDown", { clientX: 0, pointerId: 1 });
-  node.fire("onPointerUp", {});
-  await settle();
-  eq(host.selects[host.selects.length - 1].reasoningEffort, "off", "[2c] 贴最左命中第一档");
-  eq(internals.knobOffsetOf(0), `calc(${R}px + 0 * (100% - ${2 * R}px))`,
-    "[2c] 贴左时填充盒宽只剩一个半径 —— 最窄、最容易退化的那个宽度");
-  eq(react.find("fill").style.width, internals.knobOffsetOf(0),
-    "[2c] 贴左：填充宽度 = 旋钮圆心（右端直角恰好被旋钮盖住）");
-  eq(react.find("knob").style.left, internals.knobOffsetOf(0),
-    "[2c] 贴左：旋钮圆心与填充右边界重合");
 }
 
 section("3. 认不出锚点 / 不该动手时，官方菜单原样不动（fail-open）");
@@ -331,21 +305,25 @@ section("4. 关闭菜单 → 官方那一行逐个还原");
   ok(react2.portalHosts.length === 0, "[4] portal 已清空");
 }
 
-section("5. 拖动真的写回官方档位");
+section("5. 拖动**跨档即写回**（拖到哪档就变成哪一档），松手再确认一次");
 {
   const { menu, react, host } = await setup();
   track(react).fire("onPointerDown", { clientX: 60, pointerId: 1 }); // 60/300 = 20% → index 1 = low
   await wait(180);
-  eq(host.selects.length, 1, "[5] 拖动中停留 → 档位在降频窗口到期后落地");
+  // ⚠️ 契约：拖动期**只在跨过档位边界的那一刻**写回一次（不是原来的每 120ms 一次）。
+  //    用户要的是"拖到哪档就变成哪一档"（官方那一行的档位文字随手走）；
+  //    但每秒 8 次写回会让「已生效档位」在拖动中不停变化 → 与滞后的引擎位置不同步 → 抽搐。
+  eq(host.selects.length, 1, "[5] 拖动跨到新档位即写回一次（跨档触发，不是每 120ms 一次）");
+  eq(host.selects[0].reasoningEffort, "low", "[5] 写回的就是指针所在那一档（low）");
+
+  track(react).fire("onPointerUp", {});
+  await settle();
+  eq(host.selects.length, 1, "[5] 松手时同档位去重，不重复写");
   eq(JSON.stringify(host.selects[0]), JSON.stringify({
     provider: "deepseek",
     model: "deepseek-v41-flash",
     reasoningEffort: "low",
   }), "[5] 写回的是官方 select 契约 { provider, model, reasoningEffort }");
-
-  track(react).fire("onPointerUp", {});
-  await settle();
-  eq(host.selects.length, 1, "[5] 已落地的档位在松手时不重复写（同档位去重）");
   eq(react.find("track").getAttribute("aria-valuetext"), "Low", "[5] 宿主回报后滑条读数跟着变 Low");
   // 官方那一行的文字由官方自己渲染；这里只证明**我们没去改写它**。
   const officialSpans = menu.effortRow.children.filter((child) => child.tagName === "SPAN");
@@ -443,8 +421,8 @@ section("8. 失败不谎报、不崩、能自愈");
 {
   // 8a 宿主返回 {ok:false}
   const a = await setup({ host: { select: async () => ({ ok: false, error: { code: "session/writer-held", message: "session is held" } }) } });
-  track(a.react).fire("onPointerDown", { clientX: 290, pointerId: 1 });
-  track(a.react).fire("onPointerUp", {});
+  await pressAndSettle(a, 290);
+  await releaseAndSettle(a);
   await settle(14);
   ok(a.react.find("error") !== null, "[8] 写回失败 → 行里显示错误");
   ok(String(a.react.find("error").textContent).indexOf("session is held") >= 0, "[8] 错误里带宿主给的原始原因");
@@ -454,8 +432,8 @@ section("8. 失败不谎报、不崩、能自愈");
   const b = await setup({ host: { select: () => { throw new Error("boom"); } } });
   let threw = false;
   try {
-    track(b.react).fire("onPointerDown", { clientX: 290, pointerId: 1 });
-    track(b.react).fire("onPointerUp", {});
+    await pressAndSettle(b, 290);
+    await releaseAndSettle(b);
     await settle(14);
   } catch (error) {
     threw = true;
@@ -496,7 +474,8 @@ section("9. 快照身份稳定（否则 uSES 会把渲染打成死循环）");
 
 section("10. 位置驱动的色彩与粒子（蓝 → 紫 → 深紫，粒子越来越密）");
 {
-  const { react, internals, menu, host } = await setup();
+  const ctx10 = await setup();
+  const { react, internals, menu, host } = ctx10;
   const T = internals.ENERGY_START; // 1/3：第二档
   const H = internals.ENERGY_END; // 2/3：high 档（4 档模型）
   // 初始停在 high（pct = 2/3）：新模型下这里能量是 0.5、一半粒子、紫填充
@@ -537,9 +516,8 @@ section("10. 位置驱动的色彩与粒子（蓝 → 紫 → 深紫，粒子越
   ok(highDur / internals.starDurationFor(0, internals.speedFor(1)) > 1.7, "[10] 速度变化保留：high 比 MAX 慢近一倍");
 
   // 第二档（low，pct=1/3）：纯蓝、没有粒子、没有星云
-  track(react).fire("onPointerDown", { clientX: internals.KNOB_RADIUS + T * (300 - 2 * internals.KNOB_RADIUS), pointerId: 1 });
-  track(react).fire("onPointerUp", {});
-  await settle();
+  await pressAndSettle(ctx10, internals.KNOB_RADIUS + T * (300 - 2 * internals.KNOB_RADIUS));
+  await releaseAndSettle(ctx10);
   eq(react.find("root").getAttribute("data-energy"), "0", "[10] 第二档：能量层关闭");
   eq(react.find("root").style["--ces-energy"], "0", "[10] 能量强度 0");
   eq(react.findAll("particle").length, 0, "[10] 第二档没有粒子（干净蓝）");
@@ -578,8 +556,7 @@ section("10. 位置驱动的色彩与粒子（蓝 → 紫 → 深紫，粒子越
   ok(internals.speedFor(0.9) > internals.speedFor(0.7), "[10] 速率随位置递增");
 
   // ── 渲染出来的东西要跟这些函数一致
-  track(react).fire("onPointerDown", { clientX: 300, pointerId: 1 }); // 最右
-  await settle();
+  await pressAndSettle(ctx10, 300); // 最右
   eq(react.find("root").getAttribute("data-energy"), "1", "[10] 最高档：能量层开启");
   eq(react.find("root").style["--ces-energy"], "1", "[10] 最高档能量强度 = 1");
   eq(react.findAll("particle").length, internals.PARTICLES.length, "[10] 最高档粒子全出（渲染一致）");
@@ -643,8 +620,7 @@ section("10. 位置驱动的色彩与粒子（蓝 → 紫 → 深紫，粒子越
   ok(Math.min(...brightness) < 0.7 && Math.max(...brightness) > 0.9, `[10] 亮度铺开到两端（${Math.min(...brightness).toFixed(2)}~${Math.max(...brightness).toFixed(2)}）`);
   ok(internals.starBrightnessFor(0) === internals.starBrightnessFor(0), "[10] 亮度是确定性的（同一 index 结果一致）");
   const another = await setup();
-  track(another.react).fire("onPointerDown", { clientX: 300, pointerId: 1 });
-  await settle();
+  await pressAndSettle(another, 300);
   eq(
     JSON.stringify(another.react.findAll("particle").map((n) => Number(n.getAttribute("data-brightness")))),
     JSON.stringify(brightness),
@@ -655,8 +631,7 @@ section("10. 位置驱动的色彩与粒子（蓝 → 紫 → 深紫，粒子越
   ok(new Set(delays.map((d) => d.toFixed(2))).size > 10, "[10] 相位铺开（均匀分布在轨道上）");
 
   // ── 拖回 high：同一套星空动画，但**慢一倍**（速度变化保留）
-  track(react).fire("onPointerDown", { clientX: internals.KNOB_RADIUS + H * (300 - 2 * internals.KNOB_RADIUS), pointerId: 1 });
-  await settle();
+  await pressAndSettle(ctx10, internals.KNOB_RADIUS + H * (300 - 2 * internals.KNOB_RADIUS));
   near(Number(react.find("root").style["--ces-energy"]), 0.5, "[10] 拖到 high：--ces-energy = 0.5");
   eq(react.findAll("particle").length, 11, "[10] 拖到 high：11 颗星星");
   eq(react.findAll("star").length, 11, "[10] 拖到 high：仍然是星空轨道（动画已统一）");
@@ -687,14 +662,16 @@ section("10b. 系统「减少动态效果」下是放缓，不是冻住");
   eq(normal.react.find("root").getAttribute("data-motion"), "full", "[10b] 正常模式标记 full");
   ok(String(normal.react.find("track").getAttribute("title")).indexOf("减少动态效果") < 0, "[10b] 正常模式 title 不提系统设置");
 
+  // ⚠️ 默认已改为「完整动画」（用户要求）：系统即使开着「减少动态效果」，默认也走完整动画。
+  //    「快速动画」是**用户可选**的弱化档（其参数组在 19 节覆盖）。
   const reduced = await setup({ reducedMotion: true });
-  eq(reduced.react.find("root").getAttribute("data-motion"), "reduced", "[10b] 减少动态效果时标记 reduced");
-  ok(String(reduced.react.find("track").getAttribute("title")).indexOf("减少动态效果") >= 0, "[10b] 并用 title 说明原因（用户不用猜）");
-  eq(reduced.react.findAll("star").length, 11, "[10b] 减少动态效果时星空照常存在（只是放缓）");
-  // 放缓改在 JS 里算：同一颗星的时长应当正好是正常模式的 2.6 倍
+  eq(reduced.react.find("root").getAttribute("data-motion"), "full", "[10b] 默认「完整动画」→ 即便系统要求减少动态也标记 full");
+  ok(String(reduced.react.find("track").getAttribute("title")).indexOf("减少动态效果") < 0, "[10b] 默认下 title 不加「已放缓」提示");
+  eq(reduced.react.findAll("star").length, 11, "[10b] 星空照常存在");
   const normalDur = parseFloat(star.style.animationDuration);
   const reducedDur = parseFloat(reduced.react.findAll("star")[0].style.animationDuration);
-  near(reducedDur / normalDur, reduced.internals.REDUCED_MOTION_SLOWDOWN, "[10b] 减少动态效果 → 星星周期 ×2.6（放缓，而不是冻住）", 0.01);
+  near(reducedDur / normalDur, 1, "[10b] 默认「完整动画」→ 星星周期与正常模式一致（不放缓）", 0.01);
+  ok(reduced.internals.REDUCED_MOTION_SLOWDOWN > 1, "[10b] 「快速动画」档所用的放缓系数仍在（>1）");
 
   const css = reduced.internals.CSS;
   ok(css.indexOf(".ces-energy__sweep{display:none}") > 0, "[10b] reduced-motion 收起扫光（最闪的那部分）");
@@ -752,7 +729,8 @@ section("13. 宿主半边（lib/index.js）");
 
 section("14. 官方数值文字（Max / High）的颜色");
 {
-  const { react, internals, menu } = await setup();
+  const ctx14 = await setup();
+  const { react, internals, menu } = ctx14;
   const H = internals.ENERGY_END;
   // 只改颜色，一个字的文字都不碰
   eq(menu.effortValueEl.textContent, "High", "[14] 文字内容没被动过");
@@ -792,8 +770,7 @@ section("14. 官方数值文字（Max / High）的颜色");
   ok(sum(internals.valueColorFor(1)) > sum(internals.valueColorFor(H)), "[14] 最高档比 high 更亮（越往右越通电）");
 
   // 拖到最高档 → 文字变成紫罗兰
-  track(react).fire("onPointerDown", { clientX: 300, pointerId: 1 });
-  await settle();
+  await pressAndSettle(ctx14, 300);
   eq(menu.effortValueEl.style.color, "rgb(139,92,246)", "[14] 拖到 Max：文字直接变紫罗兰");
   eq(menu.effortValueEl.textContent, "High", "[14] 文字内容仍然由官方自己管（没被我们改写）");
 
@@ -826,15 +803,14 @@ section("15. 收起态模型席按钮上的档位（点开之前就看得见）"
   ok(closed.react.find("track") === null, "[15] 菜单没打开时不注入滑条（前置条件，说明上面那条不是靠滑条生效的）");
 
   // 打开菜单后：拖动改档位 → 菜单里的数值跟着草稿、席上的档位跟已生效
-  const { react, internals, menu, bundle, document } = await setup();
+  const ctx15 = await setup();
+  const { react, internals, menu, bundle, document } = ctx15;
 
   // 拖动中：官方席显示的是**已生效**档位，所以它的颜色不该跟着草稿跑
-  track(react).fire("onPointerDown", { clientX: 300, pointerId: 1 });
-  await settle();
+  await pressAndSettle(ctx15, 300);
   eq(menu.effortValueEl.style.color, "rgb(139,92,246)", "[15] 菜单里那一行跟着草稿变成 Max 色");
   eq(menu.seatEffortEl.style.color, internals.valueColorFor(H), "[15] 席按钮仍按已生效档位着色（拖动中不乱跳）");
-  track(react).fire("onPointerUp", {});
-  await settle();
+  await releaseAndSettle(ctx15);
   eq(menu.seatEffortEl.style.color, "rgb(139,92,246)", "[15] 提交后席按钮跟上 Max 色");
   eq(menu.seatEffortEl.textContent, "High", "[15] 文字仍然由官方自己管（我们只改颜色）");
 
@@ -890,12 +866,10 @@ section("16. Off 档保持官方灰 + 刻度点更小更淡");
   eq(off.menu.effortValueEl.textContent, "Off", "[16] 文字内容仍然是官方的");
   ok(!off.menu.seatLabelEl.style.color, "[16] 模型名依旧不动");
   // 拖到 Max 就恢复着色（确认"灰"只发生在 off 档）
-  track(off.react).fire("onPointerDown", { clientX: 300, pointerId: 1 });
-  await settle();
+  await pressAndSettle(off, 300);
   eq(off.menu.effortValueEl.style.color, "rgb(139,92,246)", "[16] 拖到 Max：菜单里那一行先变紫罗兰");
   eq(off.menu.seatEffortEl.style.color, "", "[16] 席按钮按已生效档位（仍是 off）→ 还是灰的");
-  track(off.react).fire("onPointerUp", {});
-  await settle();
+  await releaseAndSettle(off);
   eq(off.menu.seatEffortEl.style.color, "rgb(139,92,246)", "[16] 提交后席按钮也变成紫罗兰");
 
   // 刻度点：更小更淡
@@ -905,6 +879,674 @@ section("16. Off 档保持官方灰 + 刻度点更小更淡");
   ok(internals.CSS.indexOf(".ces-tick[data-on='1']{background:rgba(255,255,255,.5)}") > 0, "[16] 已达刻度 92% → 50% 白（更淡，不再和星星抢眼）");
   const tickNodes = off.react.findAll("tick");
   ok(tickNodes.length >= 4, `[16] 4 档就有 4 个刻度点（实测 ${tickNodes.length}）`);
+}
+
+/* ══════════════════════════════════════════════════════════════════════ */
+
+section("17. 连续运动引擎：纯函数层（刹车预测 + 速度跟踪）");
+{
+  const ctx = await setup();
+  const I = ctx.internals;
+  const P = I.MOTION;
+  const DT = 1 / 60;
+
+  /** 跑一串帧，返回轨迹与统计。 */
+  function trace(init, frames, mutate) {
+    const m = Object.assign({ x: 0, v: 0, a: 0, target: 0 }, init);
+    const rows = [];
+    let maxDv = 0, prevV = m.v, maxDa = 0, prevA = m.a;
+    for (let f = 0; f < frames; f += 1) {
+      if (mutate) mutate(m, f);
+      I.motionStep(m, DT, P);
+      maxDv = Math.max(maxDv, Math.abs(m.v - prevV));
+      maxDa = Math.max(maxDa, Math.abs(m.a - prevA));
+      prevV = m.v; prevA = m.a;
+      rows.push({ x: m.x, v: m.v, a: m.a, target: m.target });
+    }
+    return { m, rows, maxDv, maxDa };
+  }
+
+  /** 从静止走到 target，跑到精确落点（或超时）；同时统计 v 的符号翻转（抖振）。 */
+  function run(target, maxFrames = 3000) {
+    const m = { x: 0, v: 0, a: 0, target };
+    let peak = 0, frames = 0, flips = 0, prevSign = 0;
+    for (; frames < maxFrames; frames += 1) {
+      I.motionStep(m, DT, P);
+      peak = Math.max(peak, m.x);
+      const s = Math.sign(m.v);
+      if (s !== 0 && prevSign !== 0 && s !== prevSign) flips += 1;
+      if (s !== 0) prevSign = s;
+      if (m.x === target && m.v === 0) break;
+    }
+    return { m, frames, overshoot: peak - target, flips, landed: m.x === target && m.v === 0 };
+  }
+
+  // ① 参数：四个旋钮都是正数
+  ok(P.K > 0, `[17] 位置→速度增益 K = ${P.K} > 0`);
+  ok(P.A > 0, `[17] 刹车斜率 A = ${P.A} > 0`);
+  ok(P.k > 0, `[17] 速度跟踪增益 k = ${P.k} > 0`);
+  ok(P.vmax > 0, `[17] 速度上限 vmax = ${P.vmax} > 0`);
+
+  // ② ⚠️ **最关键的结构性断言**：两项必须同时存在。
+  //    只留刹车曲线 √(2A|e|) 会抖振（它是 bang-bang 的切换曲线，
+  //    与恒力 ±A 配套；换成连续力律后必须补线性映射 K·|e|）。
+  {
+    // 复现"只留刹车曲线"的缺陷版本，确认它确实抖振 —— 防止将来有人把 K 项删掉
+    function stepBrakeOnly(m) {
+      const e = m.target - m.x;
+      let vW = Math.sqrt(2 * P.A * Math.abs(e));
+      if (vW > P.vmax) vW = P.vmax;
+      const vDes = e > 0 ? vW : (e < 0 ? -vW : 0);
+      m.a = Math.max(-P.amax, Math.min(P.amax, P.k * (vDes - m.v)));
+      m.v = Math.max(-P.vmax, Math.min(P.vmax, m.v + m.a * DT));
+      m.x += m.v * DT;
+    }
+    const bad = { x: 0, v: 0, a: 0, target: 0.5 };
+    let flipsBad = 0, prevSign = 0;
+    for (let f = 0; f < 600; f += 1) {
+      stepBrakeOnly(bad);
+      const s = Math.sign(bad.v);
+      if (s !== 0 && prevSign !== 0 && s !== prevSign) flipsBad += 1;
+      if (s !== 0) prevSign = s;
+    }
+    ok(flipsBad > 100,
+      `[17] 反例确认：只有刹车曲线时 v 翻转 ${flipsBad} 次（抖振不收敛）→ 所以 K·|e| 那一项不能删`);
+    // 而正式实现零翻转
+    const good = run(0.5);
+    ok(good.flips === 0, `[17] 正式实现（含 K·|e|）零抖振（v 翻转 ${good.flips} 次）`);
+  }
+
+  // ③ **精确落点 + 零抖振**：所有距离都必须严丝合缝停住
+  for (const target of [0.02, 0.05, 0.1, 0.25, 1 / 3, 0.5, 2 / 3, 0.75, 1]) {
+    const r = run(target);
+    ok(r.landed && r.flips === 0,
+      `[17] 目标 ${target.toFixed(4)} 精确落点且零抖振（${r.frames} 帧，翻转 ${r.flips}）`);
+  }
+
+  // ④ 过冲在亚像素级（≤0.5px / 272px）
+  {
+    const subPixel = 0.5 / 272;
+    let worst = 0;
+    for (const target of [0.02, 0.1, 0.25, 0.5, 0.75]) worst = Math.max(worst, run(target).overshoot);
+    ok(worst < subPixel, `[17] 各距离过冲 ${(worst * 272).toFixed(3)}px < 0.5px（亚像素）`);
+  }
+
+  // ⑤ 加速度被 amax 限住，且**不抖振**（这是本模型相对 bang-bang 的核心优势）
+  //    ⚠️ 口径说明：以前写过"帧间 Δa ≤ amax·dt"，但那条**对速度跟踪力律不成立** ——
+  //       `a = k·(v期望 − v)`，速度差大时 a 就大，一帧内可以变很多（实测 160）。
+  //       这不叫不连续：a 是 (x, v) 的**连续函数**，只是 v 自身一帧内变化大。
+  //       真正该断言的是：a 始终被 amax 限住 + 在目标附近**不来回翻转**（不抖振）。
+  {
+    const r = trace({ x: 0, target: 1 }, 200);
+    let maxAbsA = 0;
+    for (const row of r.rows) maxAbsA = Math.max(maxAbsA, Math.abs(row.a));
+    ok(maxAbsA <= P.amax + 1e-9, `[17] 加速度始终被 amax 限住（实测峰值 ${maxAbsA.toFixed(0)} ≤ ${P.amax}）`);
+
+    // 不抖振：目标固定时，a 的符号翻转次数应为 0（bang-bang 会反复翻转）
+    const m = { x: 0, v: 0, a: 0, target: 1 };
+    let aFlips = 0, prevSign = 0;
+    for (let f = 0; f < 300; f += 1) {
+      I.motionStep(m, DT, P);
+      const s = Math.sign(m.a);
+      if (s !== 0 && prevSign !== 0 && s !== prevSign) aFlips += 1;
+      if (s !== 0) prevSign = s;
+      if (m.x === 1 && m.v === 0) break;
+    }
+    ok(aFlips <= 1, `[17] 到位过程加速度只换向 ${aFlips} 次（加速→减速；不抖振）`);
+  }
+
+  // ⑥ 速度连续（帧间 Δv ≤ amax·dt，撞墙帧除外）
+  {
+    const r = trace({ target: 1 }, 200);
+    const limit = P.amax * DT + 1e-9;
+    ok(r.maxDv <= limit, `[17] 帧间 Δv ${r.maxDv.toFixed(3)} ≤ amax·dt ${limit.toFixed(3)}（速度连续）`);
+  }
+
+  // ⑦ 反向：**先滑行再掉头**（v 连续穿过 0），滑行距离 ≈ v²/(2A)
+  {
+    const m = { x: 0, v: 0, a: 0, target: 1 };
+    for (let f = 0; f < 200 && m.v < P.vmax * 0.95; f += 1) I.motionStep(m, DT, P);
+    const vBefore = m.v, x0 = m.x;
+    let sameDirFrames = 0, maxDv = 0, prevV = m.v, slidePx = 0;
+    for (let f = 0; f < 200; f += 1) {
+      m.target = 0;
+      I.motionStep(m, DT, P);
+      maxDv = Math.max(maxDv, Math.abs(m.v - prevV)); prevV = m.v;
+      if (m.v > 0) { sameDirFrames += 1; slidePx = Math.abs(m.x - x0); }
+      else break;
+    }
+    ok(vBefore > P.vmax * 0.5, `[17] 前置：反向时确实在满速附近（v=${vBefore.toFixed(2)}）`);
+    ok(sameDirFrames >= 1, `[17] 满速反向后有 ${sameDirFrames} 帧仍朝原方向滑行（v 连续穿过 0）`);
+    ok(maxDv <= P.amax * DT + 1e-9, `[17] 反向过程 v 依然连续（最大 Δv ${maxDv.toFixed(3)}）`);
+    // 滑行距离由 A 决定（这是 A 这个旋钮的物理含义）
+    const theory = (vBefore * vBefore) / (2 * P.A);
+    ok(slidePx <= theory * 272 * 1.6 + 1,
+      `[17] 反向滑行 ${(slidePx * 272).toFixed(1)}px ≈ v²/2A ${(theory * 272).toFixed(1)}px（A 越大越"立即听话"）`);
+  }
+
+  // ⑧ 边界：位置夹在 [0,1]；非撞墙帧 Δv ≤ amax·dt
+  {
+    for (const target of [-0.5, 1.5]) {
+      const m = { x: 0.5, v: 0, a: 0, target };
+      let maxDvNonWall = 0, prevV = m.v;
+      for (let f = 0; f < 200; f += 1) {
+        const before = m.x;
+        I.motionStep(m, DT, P);
+        const dv = Math.abs(m.v - prevV);
+        const hitWall = (m.x === 0 && before > 0 && m.v === 0) || (m.x === 1 && before < 1 && m.v === 0);
+        if (!hitWall) maxDvNonWall = Math.max(maxDvNonWall, dv);
+        prevV = m.v;
+      }
+      ok(m.x >= 0 && m.x <= 1, `[17] 目标 ${target}：位置被夹在 [0,1]（实测 ${m.x.toFixed(4)}）`);
+      ok(maxDvNonWall <= P.amax * DT + 1e-9,
+        `[17] 目标 ${target}：非撞墙帧 Δv ${maxDvNonWall.toFixed(3)} ≤ amax·dt`);
+    }
+  }
+
+  // ⑨ 极小距离也精确落点
+  {
+    for (const target of [0.001, 0.005, 0.01]) {
+      const r = run(target);
+      ok(r.landed, `[17] 极小距离 ${target} 精确落点（${r.frames} 帧）`);
+    }
+  }
+
+  // ⑩ 松手外推：速度的连续函数，无门槛
+  {
+    eq(I.releaseIndexFor(0.5, 0, 4), I.indexFromPct(0.5, 4), "[17] 速度为 0 → 外推量为 0（不改落点）");
+    eq(I.RELEASE_PROJECT_S, 0, "[17] 灵敏度已关闭（诊断结论：非零外推会跨档 → 抽搐）");
+    ok(I.indexFromPct(0.5 + 6 * 0.08, 4) >= I.indexFromPct(0.5, 4), "[17] 外推顺着运动方向（不会反向推）");
+  }
+}
+
+section("18. 连续运动引擎：接线层（按下/拖动/松手/键盘只改目标）");
+{
+  // ① 按下不瞬移：按下后**不泵帧**，位置应停在原处（引擎还没走）
+  {
+    const ctx = await setup();
+    const before = ctx.react.find("knob").style.left;
+    track(ctx.react).fire("onPointerDown", { clientX: 300, pointerId: 1 });
+    for (let m = 0; m < 6; m += 1) await Promise.resolve();
+    const after = ctx.react.find("knob").style.left;
+    eq(after, before, "[18] 按下瞬间**不瞬移**（位置停在原处，等引擎追过去）");
+  }
+
+  // ② 逐帧推进：位置单调逼近目标，且单帧位移有界（永不跳变）
+  {
+    const ctx = await setup();
+    const I = ctx.internals;
+    /** 从 calc(14px + <pct> * (100% - 28px)) 里取出 pct。 */
+    const pctOf = (css) => {
+      const m = /\+ ([\d.]+) \*/.exec(String(css));
+      return m === null ? null : Number(m[1]);
+    };
+    track(ctx.react).fire("onPointerDown", { clientX: 300, pointerId: 1 });
+    let prev = pctOf(ctx.react.find("knob").style.left);
+    ok(prev !== null, "[18] 位置是 calc() 形式（能解析出 pct）");
+    let maxJump = 0;
+    const seen = [];
+    for (let f = 0; f < 30; f += 1) {
+      ctx.flushFrames(1, 16);
+      for (let m = 0; m < 6; m += 1) await Promise.resolve();
+      const now = pctOf(ctx.react.find("knob").style.left);
+      maxJump = Math.max(maxJump, Math.abs(now - prev));
+      prev = now;
+      seen.push(now);
+    }
+    const jumpLimit = I.MOTION.vmax * (16 / 1000) + 0.01;
+    ok(maxJump <= jumpLimit, `[18] 单帧位移 ${(maxJump * 100).toFixed(2)}% ≤ vmax·dt ${(jumpLimit * 100).toFixed(2)}%（永不跳变）`);
+    ok(seen[seen.length - 1] > seen[0], "[18] 位置逐帧在推进（引擎在工作）");
+  }
+
+  // ③ 松手：写回发生在**松手瞬间**，且落点 = 外推后的档位
+  {
+    const ctx = await setup();
+    const I = ctx.internals;
+    await pressOnly(ctx, 300);
+    const selectsBefore = ctx.host.selects.length;
+    track(ctx.react).fire("onPointerUp", {});
+    await settle();
+    ok(ctx.host.selects.length > selectsBefore, "[18] 松手立即写回（不等待吸附动画跑完）");
+    eq(ctx.host.selects[ctx.host.selects.length - 1].reasoningEffort, "max", "[18] 松手落点 = 外推后的档位（与视觉无关）");
+  }
+
+  // ④ 吸附结束后交回 effectivePct（不残留 draft）
+  {
+    const ctx = await setup();
+    await pressAndSettle(ctx, 0);
+    await releaseAndSettle(ctx);
+    eq(ctx.react.find("knob").style.left, ctx.internals.knobOffsetOf(0), "[18] 吸附完成后精确落在档位点");
+    eq(ctx.react.find("track").getAttribute("aria-valuenow"), "0", "[18] 吸附完成后读数 = 落点档位");
+  }
+
+  // ⑤ 拖动中"追上指针"后位置停在指针处（不能清掉 draft 跳回已生效档位）
+  {
+    const ctx = await setup();
+    const I = ctx.internals;
+    await pressOnly(ctx, 150); // 指针落在中间（不是档位点）
+    await runFrames(ctx);
+    const pct = (150 - I.KNOB_RADIUS) / (300 - 2 * I.KNOB_RADIUS);
+    eq(ctx.react.find("knob").style.left, I.knobOffsetOf(I.clamp01(pct)), "[18] 拖动中追上指针后停在指针处（不跳回档位）");
+  }
+
+  // ⑥ 键盘：只改目标，位置连续过去（不瞬移）
+  {
+    const ctx = await setup();
+    const before = ctx.react.find("knob").style.left;
+    const trackNode = ctx.react.find("track");
+    trackNode.fire("onKeyDown", { key: "Home", preventDefault() {} });
+    for (let m = 0; m < 6; m += 1) await Promise.resolve();
+    eq(ctx.react.find("knob").style.left, before, "[18] 键盘改档也不瞬移（位置交给引擎）");
+    await runFrames(ctx);
+    eq(ctx.react.find("knob").style.left, ctx.internals.knobOffsetOf(0), "[18] 键盘目标最终精确到位");
+  }
+
+  // ⑦ 卸载后帧循环必须停（否则 setDraft 到已卸载组件）
+  {
+    const ctx = await setup();
+    track(ctx.react).fire("onPointerDown", { clientX: 300, pointerId: 1 });
+    ctx.flushFrames(1, 16);
+    for (let m = 0; m < 6; m += 1) await Promise.resolve();
+    ctx.react.unmount();
+    const noop = () => null;
+    ctx.react.find = noop; // 卸载后若还渲染就会读到 null 而崩
+    const executed = ctx.flushFrames(20, 16);
+    ok(executed === 0, `[18] 卸载后帧循环已停（继续泵 ${executed} 帧都无人响应）`);
+  }
+}
+
+section("19. 两种动画模式：简洁 / 完整，且都不受系统「减少动态效果」影响");
+{
+  const pctOf = (c) => {
+    const m = /\+ ([\d.]+) \*/.exec(c.react.find("knob").style.left || "");
+    return m ? parseFloat(m[1]) : 0;
+  };
+  const run = async (c, frames, dt = 16) => {
+    for (let i = 0; i < frames; i += 1) {
+      const e = c.flushFrames(1, dt);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+      if (e === 0) break;
+    }
+  };
+
+  const ctx = await setup();
+  const I = ctx.internals;
+
+  // ① 设置只剩两项（灵敏度/力度已按要求删除）
+  eq(I.SETTINGS_SCHEMA.length, 2, "[19] 设置只有两项（动画 + 刻度点）");
+  eq(I.SETTINGS_SCHEMA.map((it) => it.key).join(","), "motion,reachedTicks", "[19] 键名正确，力度已删除");
+  eq(I.readSettings().motion, "full", "[19] 动画默认 = 完整动画");
+  ok(I.SETTINGS_SCHEMA.every((it) => it.default !== undefined), "[19] 每项都显式声明 default");
+  eq(I.SETTINGS_SCHEMA[0].options.map((o) => o.label).join("/"), "简洁动画/完整动画", "[19] 两个选项的文案");
+
+  // ② 两种模式的参数组
+  ok(I.motionParamsForMode() === I.MOTION, "[19] 完整动画 → MOTION（他的方案）");
+  I.writeSettings({ motion: "quick" });
+  ok(I.motionParamsForMode() === I.MOTION_REDUCED, "[19] 简洁动画 → MOTION_REDUCED（我们之前的方案）");
+  ok(I.MOTION_REDUCED.K > I.MOTION.K && I.MOTION_REDUCED.vmax > I.MOTION.vmax, "[19] 简洁参数更紧");
+
+  // ③ 灵敏度写死为"他原来的一半"
+  ok(I.RELEASE_PROJECT_S === 0, "[19] 灵敏度 = 0（非零外推会把落点推到另一档 → 抽搐）");
+
+  // ④ 系统「减少动态效果」完全不影响行为
+  for (const mode of ["full", "quick"]) {
+    const a = await setup({ reducedMotion: true });
+    a.internals.writeSettings({ motion: mode });
+    const b = await setup({ reducedMotion: false });
+    b.internals.writeSettings({ motion: mode });
+    eq(a.react.find("root").getAttribute("data-motion"), b.react.find("root").getAttribute("data-motion"),
+      `[19] ${mode}：系统开关不改变 data-motion`);
+    eq(String(a.react.find("track").getAttribute("title")), String(b.react.find("track").getAttribute("title")),
+      `[19] ${mode}：系统开关不改变提示文案`);
+    const drive = async (c) => {
+      track(c.react).fire("onPointerDown", { clientX: 60, pointerId: 1 });
+      await run(c, 4);
+      track(c.react).fire("onPointerMove", { clientX: 260, buttons: 1 });
+      await run(c, 12);
+      return pctOf(c);
+    };
+    eq(await drive(a), await drive(b), `[19] ${mode}：逐帧位置与系统设置无关`);
+  }
+
+  // ⑤ 刻度点（默认隐藏，可切换）
+  eq(I.readSettings().reachedTicks, "hidden", "[19] 刻度点默认 = 隐藏");
+  I.writeSettings({ reachedTicks: "highlight" });
+  eq(I.readSettings().reachedTicks, "highlight", "[19] 可切到亮白显示");
+  ok(/data-reached-ticks='hidden'/.test(I.CSS), "[19] CSS 含隐藏规则");
+  ok(/data-reached-ticks='dim'/.test(I.CSS), "[19] CSS 含同色规则");
+  I.writeSettings({ reachedTicks: "hidden" });
+
+  // ⑥ 未按键的 move 不得带动滑条
+  {
+    const c = await setup();
+    track(c.react).fire("onPointerDown", { clientX: 300, pointerId: 1 });
+    await run(c, 40);
+    track(c.react).fire("onPointerUp", {});
+    await run(c, 20);
+    const before = pctOf(c);
+    track(c.react).fire("onPointerMove", { clientX: 100, buttons: 0 });
+    await run(c, 6);
+    eq(pctOf(c), before, "[19] 松手结束后的无按键 move 不带动滑条");
+  }
+}
+
+section("20. 指针速度不得冻结（滑块跑到鼠标一侧的回归）");
+{
+  const ctx = await setup();
+  const I = ctx.internals;
+
+  // ── 纯函数层：陈旧衰减 ──
+  ok(typeof I.decayPointerSpeed === "function", "[20] 暴露了 decayPointerSpeed（可离线断言）");
+  eq(I.decayPointerSpeed(2, 0.001, I.POINTER_STALE_S, I.POINTER_SPEED_TAU), 2,
+    "[20] 保鲜期内不衰减（刚发生的 pointermove 有效）");
+  eq(I.decayPointerSpeed(2, I.POINTER_STALE_S, I.POINTER_STALE_S, I.POINTER_SPEED_TAU), 2,
+    "[20] 恰在保鲜期边界上不衰减");
+  {
+    const d = I.decayPointerSpeed(2, 0.2, I.POINTER_STALE_S, I.POINTER_SPEED_TAU);
+    ok(d < 0.01 && d > 0, `[20] 超时 200ms 后几乎衰减到 0（实测 ${d.toExponential(2)}）`);
+  }
+  ok(I.decayPointerSpeed(-2, 0.2, I.POINTER_STALE_S, I.POINTER_SPEED_TAU) < 0,
+    "[20] 反向速度同样衰减（不会变号）");
+
+  // ── 这个 bug 现在从机理上消失了：vPtr 不再参与运动演化 ──
+  // （上一版（弹簧阻尼 + 前馈）里 vPtr 是前馈项 2ζω(vPtr−v) 的输入，冻结会把它
+  //   变成一个恒定的力，让滑块永久偏在鼠标一侧 13.33%。本版运动律只看 x 与 v，
+  //   不含前馈项，所以那一整类问题从机理上不存在。）
+  // 但 vPtr 仍被"松手外推"使用，所以衰减本身必须保留（见上面几条）。
+  {
+    const P = I.MOTION;
+    // 运动演化**完全不看 vPtr**：给一个巨大的 vPtr 也不影响结果
+    const a = { x: 0.5, v: 0, a: 0, target: 0.8, vPtr: 0 };
+    const b = { x: 0.5, v: 0, a: 0, target: 0.8, vPtr: 99 };
+    for (let f = 0; f < 200; f += 1) { I.motionStep(a, 1 / 60, P); I.motionStep(b, 1 / 60, P); }
+    ok(a.x === b.x && a.v === b.v,
+      `[20] 运动演化与 vPtr 无关（本版无前馈项）：两者终点都是 ${a.x.toFixed(4)}`);
+    ok(a.x === 0.8, "[20] 且精确落在目标（不再被冻结的速度推偏）");
+  }
+
+  // ── 接线层：真实的"指针移动 → 停住"必须停在指针处 ──
+  {
+    const c = await setup();
+    const W = 300;
+    const pctOf = (css) => { const m = /\+ ([\d.]+) \*/.exec(String(css)); return m === null ? null : Number(m[1]); };
+    const readPct = () => pctOf(c.react.find("knob").style.left);
+    const at = (pct) => 14 + pct * (W - 28);
+
+    // 按下并追到位
+    track(c.react).fire("onPointerDown", { clientX: at(0.20), pointerId: 1 });
+    for (let f = 0; f < 120; f += 1) {
+      const e = c.flushFrames(1, 16);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+      if (e === 0) break;
+    }
+    near(readPct(), 0.20, "[20] 前置：按下召唤追到位", 1e-3);
+
+    // 连续 pointermove 向右扫（模拟 60Hz）
+    let lastPct = 0.20;
+    for (let step = 1; step <= 25; step += 1) {
+      c.advanceClock(16);
+      lastPct = 0.20 + step * 0.02;
+      track(c.react).fire("onPointerMove", { clientX: at(lastPct) });
+      c.flushFrames(1, 16);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+    }
+
+    // 指针停住：不再有任何 pointermove。**手指仍按着**，所以循环应当常驻
+    // （这正是修掉"拖动时瞬间卡顿"的做法：追平后不停循环，避免重启第一帧白费）。
+    let framesAfterStop = 0;
+    for (let f = 0; f < 90; f += 1) {
+      const e = c.flushFrames(1, 16);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+      if (e === 0) break;
+      framesAfterStop += 1;
+    }
+    await settle();
+
+    const finalPct = readPct();
+    const offset = finalPct - lastPct;
+    ok(Math.abs(offset) < 0.01,
+      `[20] 指针停住后滑块停在指针处（偏移 ${(offset * 100).toFixed(3)}%，旧代码是 +13.33%）`);
+    ok(framesAfterStop >= 80,
+      `[20] 拖动中（手指未松）帧循环**保持常驻**（跑了 ${framesAfterStop} 帧）—— 避免重启第一帧白费`);
+
+    // 真正该"停"的时机：松手之后
+    track(c.react).fire("onPointerUp", {});
+    let framesAfterRelease = 0;
+    for (let f = 0; f < 400; f += 1) {
+      const e = c.flushFrames(1, 16);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+      if (e === 0) break;
+      framesAfterRelease += 1;
+    }
+    ok(framesAfterRelease < 300,
+      `[20] 松手并吸附完成后帧循环自行停止（${framesAfterRelease} 帧），不空转烧 CPU`);
+  }
+
+  // ⚠️ 拖动中段不能有"该动没动"的帧 —— 这是"瞬间卡顿"的回归断言。
+  //    旧代码在拖动中"追上指针"就停循环，下一个 pointermove 再 startFrames()，
+  //    而 startFrames 会重置时间基准 → 重启第一帧 dt≈0 → **那一帧位移为 0**
+  //    （实测：指针只挪 0.5% 后循环 7 帧就停；重启第 1 帧位移 0.0000%、
+  //      第 2 帧才 0.2100%）。慢拖最容易触发，所以用户体感是"偶尔卡一下"。
+  {
+    const c = await setup();
+    const W = 300;
+    const pctOf = (css) => { const m = /\+ ([\d.]+) \*/.exec(String(css)); return m === null ? null : Number(m[1]); };
+    const readPct = () => pctOf(c.react.find("knob").style.left);
+    const at = (pct) => 14 + pct * (W - 28);
+
+    // 按下并追到位
+    track(c.react).fire("onPointerDown", { clientX: at(0.1), pointerId: 1 });
+    for (let f = 0; f < 400; f += 1) {
+      const e = c.flushFrames(1, 16);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+      if (e === 0) break;
+    }
+
+    // 匀速慢拖 40 帧（每帧指针走 0.4% ≈ 1px，最容易触发"追平→停循环"）
+    const jumps = [];
+    let prev = readPct();
+    for (let f = 0; f < 40; f += 1) {
+      c.advanceClock(16);
+      const want = 0.1 + (f + 1) * 0.004;
+      track(c.react).fire("onPointerMove", { clientX: at(want) });
+      c.flushFrames(1, 16);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+      const now = readPct();
+      jumps.push(now - prev);
+      prev = now;
+    }
+    const stalled = jumps.filter((d) => Math.abs(d) < 1e-7).length;
+    const maxJump = Math.max(...jumps);
+    const minJump = Math.min(...jumps);
+    ok(stalled === 0, `[20] 慢拖 40 帧里没有"该动没动"的帧（停滞 ${stalled} 帧）`);
+    ok(minJump > 0, `[20] 每一帧都在推进（最小位移 ${(minJump * 100).toFixed(4)}%）`);
+    ok(maxJump < minJump * 4 + 1e-9,
+      `[20] 位移均匀：最大 ${(maxJump * 100).toFixed(4)}% / 最小 ${(minJump * 100).toFixed(4)}% = ${(maxJump / minJump).toFixed(2)}× < 4×`);
+  }
+
+  // ── 松手外推不被污染的 vPtr 带偏 ──
+  {
+    // 指针停住 → vPtr 已衰减到 ~0 → 外推量 ~0（不该多跳一档）
+    const decayed = I.decayPointerSpeed(3, 0.2, I.POINTER_STALE_S, I.POINTER_SPEED_TAU);
+    ok(decayed * I.RELEASE_PROJECT_S < 0.002,
+      `[20] 指针停住后的松手外推 ≈0（残留 ${(decayed * I.RELEASE_PROJECT_S * 100).toFixed(3)}% 行程），不会多跳一档`);
+  }
+}
+
+section("21. 官方菜单改档后，引擎必须跟随（防瞬移）");
+{
+  // 复现用户报的 bug：滑块拖到 max → 官方菜单选 low → 在滑块里点 max → 瞬移到 max。
+  //
+  // 根因：官方菜单是 pane 状态机（root/model/effort），点进"推理等级"后 root 那一块
+  // 被替换、滑条不渲染；选完档位回来时 effectivePct 已变，而引擎 x 只被"滑条自己的
+  // 操作"更新 —— 它不知道官方改了档位。
+  // 于是点 max 时 target=1.0 而 x 已=1.0 → 一帧内 settled → 显示从 1/3 跳成 1.0。
+  //
+  // 用 host.store.set 模拟官方那条改档路径（真机里就是 ModelSelect 的 submit）。
+  const W = 300;
+  const pctOf = (css) => { const m = /\+ ([\d.]+) \*/.exec(String(css)); return m === null ? null : Number(m[1]); };
+
+  async function scene21() {
+    const document = createDocument();
+    const menu = createOfficialMenu(document, {});
+    const bundle = loadBundle(BUNDLE, document, {});
+    const host = createFakeHost({});
+    bundle.plugin.apply(host.ctx);
+    bundle.react.mount(host.registered[0].Component, { sessionId: "session-abcdef" }, menu.composer);
+    await settle();
+    const react = bundle.react;
+    return {
+      bundle, host, menu, react,
+      track: () => { const n = react.find("track"); if (n) n.rect = { left: 0, top: 0, right: W, bottom: 28, width: W, height: 28 }; return n; },
+      readPct: () => pctOf(react.find("knob").style.left),
+      at: (pct) => 14 + pct * (W - 28),
+      /** 模拟官方菜单改档：直接改共享 store（= ModelSelect 的 submit 效果） */
+      officialSelectTo(id) {
+        const snap = host.store.getSnapshot();
+        host.store.set({ ...snap, current: { ...snap.current, reasoningEffort: id } });
+      },
+    };
+  }
+  async function pump21(s, n = 1, dt = 16) {
+    for (let i = 0; i < n; i += 1) {
+      const e = s.bundle.flushFrames(1, dt);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+      if (e === 0) return i;
+    }
+    return n;
+  }
+  /** 按一下，返回"第 0 帧后"的位置（必须先落定微任务才能读到新渲染） */
+  async function tapFirstFrame(s, pct) {
+    const before = s.readPct();
+    s.track().fire("onPointerDown", { clientX: s.at(pct), pointerId: 1 });
+    for (let k = 0; k < 6; k += 1) await Promise.resolve();
+    s.bundle.flushFrames(1, 16);
+    for (let k = 0; k < 6; k += 1) await Promise.resolve();
+    return { before, after: s.readPct() };
+  }
+
+  // ① 用户的确切步骤：拖到 max → 官方选 low → 点 max
+  {
+    const s = await scene21();
+    s.track().fire("onPointerDown", { clientX: s.at(1.0), pointerId: 1 });
+    await pump21(s, 200);
+    s.track().fire("onPointerUp", {});
+    await pump21(s, 200);
+    await settle();
+    near(s.readPct(), 1.0, "[21] 前置：滑块先拖到 max", 1e-3);
+
+    s.officialSelectTo("low");
+    await settle();
+    near(s.readPct(), 1 / 3, "[21] 官方选 low 后显示位置跟到 low", 1e-3);
+
+    const r = await tapFirstFrame(s, 1.0);
+    ok(Math.abs(r.after - r.before) < 0.05,
+      `[21] 点 max 不再瞬移（第 0 帧跳变 ${((r.after - r.before) * 100).toFixed(2)}%，修前是 66.67%）`);
+    await pump21(s, 40);
+    near(s.readPct(), 1.0, "[21] 之后平滑滑到 max", 1e-2);
+  }
+
+  // ② 点"当前显示位置"应当完全不动（引擎起点正确的最强证据）
+  {
+    const s = await scene21();
+    s.track().fire("onPointerDown", { clientX: s.at(1.0), pointerId: 1 });
+    await pump21(s, 200);
+    s.track().fire("onPointerUp", {});
+    await pump21(s, 200);
+    await settle();
+    s.officialSelectTo("low");
+    await settle();
+    const r = await tapFirstFrame(s, 1 / 3);
+    ok(Math.abs(r.after - r.before) < 0.02,
+      `[21] 点"显示中的位置"完全不动（第 0 帧跳变 ${((r.after - r.before) * 100).toFixed(2)}%）`);
+  }
+
+  // ③ 连续多轮"官方改档 → 滑块操作"都不跳变
+  {
+    const s = await scene21();
+    const ids = ["off", "low", "high", "max"];
+    let worst = 0;
+    for (let round = 0; round < 4; round += 1) {
+      s.track().fire("onPointerDown", { clientX: s.at(1.0), pointerId: 1 });
+      await pump21(s, 200);
+      s.track().fire("onPointerUp", {});
+      await pump21(s, 200);
+      await settle();
+      s.officialSelectTo(ids[round]);
+      await settle();
+      const r = await tapFirstFrame(s, 0.5);
+      worst = Math.max(worst, Math.abs(r.after - r.before));
+      s.track().fire("onPointerUp", {});
+      await pump21(s, 200);
+      await settle();
+    }
+    ok(worst < 0.05, `[21] 连续 4 轮"官方改档 → 滑块操作"最大跳变 ${(worst * 100).toFixed(2)}% < 5%`);
+  }
+
+  // ④ ⚠️ 反向保护：修法不能破坏写回（曾把对齐放进 ensureMotion 导致写回变 0 次）
+  {
+    const s = await scene21();
+    s.track().fire("onPointerDown", { clientX: 0, pointerId: 1 });
+    for (let i = 1; i <= 60; i += 1) s.track().fire("onPointerMove", { clientX: (i / 60) * 300 });
+    s.track().fire("onPointerUp", {});
+    await settle();
+    ok(s.host.selects.length >= 1 && s.host.selects.length <= 3,
+      `[21] 60 次拖动仍正常写回 ${s.host.selects.length} 次（1~3；修法若破坏写回会变 0）`);
+    eq(s.host.selects[s.host.selects.length - 1].reasoningEffort, "max", "[21] 最后一次写回的是落点档位");
+  }
+}
+
+section("22. 松手手感：两种模式都是动过去而不是瞬跳");
+{
+  const pctOf = (c) => {
+    const m = /\+ ([\d.]+) \*/.exec(c.react.find("knob").style.left || "");
+    return m ? parseFloat(m[1]) : 0;
+  };
+  for (const mode of ["full", "quick"]) {
+    const c = await setup({ reducedMotion: true });     // 系统开着减少动态，也必须一模一样
+    c.internals.writeSettings({ motion: mode });
+    track(c.react).fire("onPointerDown", { clientX: 60, pointerId: 1 });
+    for (let i = 0; i < 6; i += 1) { c.flushFrames(1, 16); for (let k = 0; k < 6; k += 1) await Promise.resolve(); }
+    track(c.react).fire("onPointerMove", { clientX: 260, buttons: 1 });
+    for (let i = 0; i < 4; i += 1) { c.flushFrames(1, 16); for (let k = 0; k < 6; k += 1) await Promise.resolve(); }
+    track(c.react).fire("onPointerUp", {});
+    const series = [];
+    for (let i = 0; i < 40; i += 1) {
+      c.flushFrames(1, 16);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+      series.push(pctOf(c));
+    }
+    let moved = 0;
+    let reversals = 0;
+    let lastDir = 0;
+    for (let i = 1; i < series.length; i += 1) {
+      const d = series[i] - series[i - 1];
+      if (Math.abs(d) > 0.002) moved += 1;
+      const dir = d > 0.002 ? 1 : (d < -0.002 ? -1 : 0);
+      if (dir !== 0 && lastDir !== 0 && dir !== lastDir) reversals += 1;
+      if (dir !== 0) lastDir = dir;
+    }
+    if (mode === "full") {
+      ok(moved >= 1, `[22] full：松手是"动过去"的（${moved} 帧有位移，不是瞬跳）`);
+    } else {
+      ok(moved <= 2, `[22] quick：简洁动画几乎瞬跳（只动了 ${moved} 帧，符合预期）`);
+    }
+    ok(reversals <= 1, `[22] ${mode}：松手过程中不来回抖（折返 ${reversals} 次）`);
+  }
+}
+
+section("48. 目录就绪：插件必须声明 remote / remote.session（参考实现事故 #2）");
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+  const m = src.match(/var inject = \[([^\]]*)\]/);
+  ok(!!m, "[48] 找到 inject 声明");
+  const list = m ? m[1] : "";
+  for (const svc of ["slots", "sessions", "modelDirectories", "remote", "remote.session"]) {
+    ok(list.includes(`"${svc}"`), `[48] inject 声明了 ${svc}`);
+  }
+  ok(/release-abort/.test(src), "[48] 档位列表为空时 endDrag 会中止落点（release-abort 守卫）");
+  ok(/!\(levelCount > 0\)/.test(src), "[48] 有 levelCount > 0 的前置判断");
 }
 
 /* ══════════════════════════════════════════════════════════════════════ */
