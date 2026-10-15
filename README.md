@@ -1,6 +1,6 @@
 # dsh-codex-effort-slider
 
-[![npm version](https://img.shields.io/npm/v/dsh-codex-effort-slider?color=8b5cf6&label=npm)](https://www.npmjs.com/package/dsh-codex-effort-slider) [![npm downloads](https://img.shields.io/npm/dm/dsh-codex-effort-slider?color=4d93f8&label=downloads)](https://www.npmjs.com/package/dsh-codex-effort-slider) [![license](https://img.shields.io/badge/license-MIT-4d93f8)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/dsh-codex-effort-slider?color=8b5cf6&label=npm)](https://www.npmjs.com/package/dsh-codex-effort-slider) [![npm downloads](https://img.shields.io/npm/dm/dsh-codex-effort-slider?color=4d93f8&label=downloads)](https://www.npmjs.com/package/dsh-codex-effort-slider) [![license](https://img.shields.io/badge/license-MIT-4d93f8)](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/LICENSE)
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）用的 **Codex 风格推理等级滑条**。
 
@@ -14,7 +14,7 @@
 2. **右键**：在**滑条上点右键**打开设置面板 👇
 3. 设置**即时生效并记住**；出问题时点一下「复制诊断」把逐帧记录导出。
 
-<img src="preview/screenshots/context-menu.png" width="330" alt="右键滑条打开设置面板：动画（简洁/完整）、已到达档位的刻度点（亮白/同色/隐藏）、复制诊断 / 恢复默认 / 关闭">
+<img src="https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/context-menu.png" width="330" alt="右键滑条打开设置面板：动画（简洁/完整）、已到达档位的刻度点（亮白/同色/隐藏）、复制诊断 / 恢复默认 / 关闭">
 
 | 设置项 | 可选 | 说明 |
 |---|---|---|
@@ -26,20 +26,20 @@
 
 收起态：档位就在输入框里那枚模型席按钮上，**点开之前**也按档位着色。
 
-![收起态：输入框里的档位显示](preview/screenshots/shot-01.png)
+![收起态：输入框里的档位显示](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-01.png)
 
 点开模型菜单后（左列浅色主题 / 右列深色主题，四档从上到下）：
 
 | 档位 | 浅色主题 | 深色主题 |
 |---|---|---|
-| **Max** | ![浅色 Max](preview/screenshots/shot-02.png) | ![深色 Max](preview/screenshots/shot-06.png) |
-| **High** | ![浅色 High](preview/screenshots/shot-03.png) | ![深色 High](preview/screenshots/shot-07.png) |
-| **Low** | ![浅色 Low](preview/screenshots/shot-04.png) | ![深色 Low](preview/screenshots/shot-08.png) |
-| **Off** | ![浅色 Off](preview/screenshots/shot-05.png) | ![深色 Off](preview/screenshots/shot-09.png) |
+| **Max** | ![浅色 Max](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-02.png) | ![深色 Max](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-06.png) |
+| **High** | ![浅色 High](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-03.png) | ![深色 High](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-07.png) |
+| **Low** | ![浅色 Low](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-04.png) | ![深色 Low](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-08.png) |
+| **Off** | ![浅色 Off](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-05.png) | ![深色 Off](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-09.png) |
 
 对比度都算过（最高档的数值文字：白底 **4.23:1**、深色底 **4.02:1**）。
-**不用安装也能先玩**：浏览器打开 [`preview/panel.html`](preview/panel.html)，可拖动、切浅深色、切 4/2/6 档模型
-（另有脚本生成的实现示意图：[`preview/seat-color.png`](preview/seat-color.png)、[`preview/distribution.png`](preview/distribution.png)）。
+**不用安装也能先玩**：浏览器打开 [`preview/panel.html`](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/panel.html)，可拖动、切浅深色、切 4/2/6 档模型
+（另有脚本生成的实现示意图：[`preview/seat-color.png`](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/seat-color.png)、[`preview/distribution.png`](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/distribution.png)）。
 
 它不新增入口：**直接改造官方模型菜单里的「推理等级」那一行** ——
 那一行被加高上下内距、允许折行，滑条作为第二行铺满整行宽度；拖到最高档时整条轨道亮起紫色能量层。
