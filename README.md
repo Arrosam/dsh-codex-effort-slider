@@ -9,16 +9,9 @@
 
 ## 装好之后长这样（真机截图）
 
-收起态：档位就在输入框里那枚模型席按钮上，**点开之前**也按档位着色。
+收起状态：档位就在输入框里那枚模型席按钮上，**点开之前**也按档位着色。
 
 ![收起态：输入框里的档位显示](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-01.png)
-## 怎么用
-
-1. **拖**：在模型菜单里那条滑条上按住拖动 —— 跟手连续运动，**拖到哪一档就即时变成哪一档**
-   （滑过档位边界就把官方档位切过去，不用等松手）。
-2. **右键**：在**滑条上点右键**打开设置面板 👇
-3. 设置**即时生效并记住**；出问题时点一下「复制诊断」把逐帧记录导出。
-
 <img src="https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/context-menu.png" width="330" alt="右键滑条打开设置面板：动画（简洁/完整）、已到达档位的刻度点（亮白/同色/隐藏）、复制诊断 / 恢复默认 / 关闭">
 
 | 设置项 | 可选 | 说明 |
@@ -39,6 +32,14 @@
 对比度都算过（最高档的数值文字：白底 **4.23:1**、深色底 **4.02:1**）。
 **不用安装也能先玩**：浏览器打开 [`preview/panel.html`](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/panel.html)，可拖动、切浅深色、切 4/2/6 档模型
 （另有脚本生成的实现示意图：[`preview/seat-color.png`](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/seat-color.png)、[`preview/distribution.png`](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/distribution.png)）。
+
+## 怎么用
+
+1. **拖**：在模型菜单里那条滑条上按住拖动 —— 跟手连续运动，**拖到哪一档就即时变成哪一档**
+   （滑过档位边界就把官方档位切过去，不用等松手）。
+2. **右键**：在**滑条上点右键**打开设置面板 👇
+3. 设置**即时生效并记住**；出问题时点一下「复制诊断」把逐帧记录导出。
+
 
 它不新增入口：**直接改造官方模型菜单里的「推理等级」那一行** ——
 那一行被加高上下内距、允许折行，滑条作为第二行铺满整行宽度；拖到最高档时整条轨道亮起紫色能量层。
