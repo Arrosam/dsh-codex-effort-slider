@@ -1177,7 +1177,8 @@ section("19. 两种动画模式：简洁 / 完整，且都不受系统「减少�
   eq(I.SETTINGS_SCHEMA.map((it) => it.key).join(","), "motion,reachedTicks", "[19] 键名正确，力度已删除");
   eq(I.readSettings().motion, "full", "[19] 动画默认 = 完整动画");
   ok(I.SETTINGS_SCHEMA.every((it) => it.default !== undefined), "[19] 每项都显式声明 default");
-  eq(I.SETTINGS_SCHEMA[0].options.map((o) => o.label).join("/"), "简洁动画/完整动画", "[19] 两个选项的文案");
+  eq(I.SETTINGS_SCHEMA[0].options.map((o) => o.label).join("/"), "快速动画/简洁动画/完整动画", "[19] 选项文案与顺序（由上到下：快速 / 简洁 / 完整）");
+  eq(I.SETTINGS_SCHEMA[0].group, "动画效果", "[19] 分组标题 = 动画效果（灰色那一行）");
 
   // ② 两种模式的参数组
   ok(I.motionParamsForMode() === I.MOTION, "[19] 完整动画 → MOTION（他的方案）");
@@ -1546,7 +1547,119 @@ section("48. 目录就绪：插件必须声明 remote / remote.session（参考�
     ok(list.includes(`"${svc}"`), `[48] inject 声明了 ${svc}`);
   }
   ok(/release-abort/.test(src), "[48] 档位列表为空时 endDrag 会中止落点（release-abort 守卫）");
-  ok(/!\(levelCount > 0\)/.test(src), "[48] 有 levelCount > 0 的前置判断");
+  ok(/!\(levelCountNow > 0\)/.test(src), "[48] 有 levelCountNow > 0 的前置判断（endDrag 读 ref 值）");
+}
+
+section("49. 档位列表瞬时为空：用缓存兜底，别中断松手写回（模型更新后的顿挫）");
+{
+  const I = (await setup()).internals;
+  const cache = { key: null, levels: [] };
+  const m = (id) => ({ id, name: id.toUpperCase() });
+
+  // 1) 活列表非空 → 原样返回，并写入缓存
+  const live1 = [m("low"), m("high")];
+  const r1 = I.resolveLevels(live1, "deepseek\u0000m1", cache);
+  ok(r1 === live1, "[49] 活列表非空 → 原样返回");
+  ok(cache.levels.length === 2 && cache.key === "deepseek\u0000m1", "[49] 同时更新缓存（键 = 模型身份）");
+
+  // 2) 活列表瞬时为空（同一模型）→ 用缓存兜底
+  const r2 = I.resolveLevels([], "deepseek\u0000m1", cache);
+  ok(r2.length === 2 && r2 === cache.levels, "[49] 同一模型下活列表为空 → 返回缓存（档位不丢）");
+
+  // 3) 模型真的换了 → 不复用旧模型档位
+  ok(I.resolveLevels([], "opencode\u0000m2", cache).length === 0, "[49] 模型变了 → 不复用旧模型的档位");
+
+  // 4) 身份未知（state.current 缺失）→ 允许用缓存兜底
+  ok(I.resolveLevels([], null, cache).length === 2, "[49] 身份未知 → 仍用缓存兜底");
+
+  // 5) 缓存为空时返回空，不凭空造档位
+  ok(I.resolveLevels([], "x\u0000y", { key: null, levels: [] }).length === 0, "[49] 缓存为空 → 返回空（不造假档位）");
+
+  // 6) 缓存被别的模型覆盖后，旧模型回来不误用
+  I.resolveLevels([m("max")], "opencode\u0000m2", cache);
+  ok(I.resolveLevels([], "deepseek\u0000m1", cache).length === 0, "[49] 缓存被别的模型覆盖 → 旧模型不再命中");
+}
+
+section("50. 松手必须用 ref 读最新档位（窗口安全网不能调用首渲染的陈旧闭包）");
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+
+  ok(/endDragRef\.current = endDrag;/.test(src), "[50] 每次渲染都刷新 endDragRef");
+  ok(/typeof endDragRef\.current === "function"\) endDragRef\.current\(\)/.test(src), "[50] 窗口 pointerup 安全网调用的是最新 endDrag");
+
+  const start = src.indexOf("function endDrag()");
+  const end = src.indexOf("function onTrackPointerDown");
+  ok(start > 0 && end > start, "[50] 能定位 endDrag 函数体");
+  const body = src.slice(start, end);
+  ok(/levelCountRef\.current/.test(body), "[50] endDrag 通过 levelCountRef 读档位数");
+  ok(/levelsRef\.current/.test(body), "[50] endDrag 通过 levelsRef 读档位列表");
+  ok(!/if \(!\(levelCount > 0\)\)/.test(body), "[50] endDrag 不再直接比较闭包里的 levelCount（旧 bug 不会回来）");
+  ok(/levelsRef\.current = levels;/.test(src), "[50] 每次渲染都刷新 levelsRef");
+}
+
+section("51. 快速动画（Codex 手感）：不跟手 + 一档一格 + 约 67ms 吸附");
+{
+  const I = (await setup()).internals;
+
+  // ① 判定纯函数：前进 1/3、后退 2/3（滞回）
+  eq(I.detentTargetIndex(0.30, 0, 4), 0, "[51] 未越过 1/3 档距 → 不动");
+  eq(I.detentTargetIndex(0.34, 0, 4), 1, "[51] 越过 1/3 档距 → 进一格");
+  eq(I.detentTargetIndex(3.0, 3, 4), 3, "[51] 到顶不越界");
+  eq(I.detentTargetIndex(0.34, 1, 4), 1, "[51] 后退需越过 2/3（滞回：0.34 不动）");
+  eq(I.detentTargetIndex(0.30, 1, 4), 0, "[51] 后退越过 2/3 → 退一格");
+  eq(I.detentTargetIndex(2.2, 0, 4), 2, "[51] 一次拖很远 → 直接跨到最近格");
+  eq(I.detentTargetIndex(0.50, 0, 1), 0, "[51] 单档 → 恒为 0");
+  eq(I.detentTargetIndex(0.50, 0, 0), 0, "[51] 无档位 → 0");
+
+  // ② 引擎参数：半条轨道 ≈ 67ms，且不过冲
+  {
+    const m = { x: 0, v: 0, a: 0, target: 0.5 };
+    let settledAt = -1;
+    let maxX = 0;
+    for (let i = 1; i <= 40; i += 1) {
+      I.motionStep(m, 1 / 60, I.MOTION_FAST);
+      maxX = Math.max(maxX, m.x);
+      if (settledAt < 0 && I.motionSettled(m, I.MOTION_FAST)) settledAt = i;
+    }
+    ok(settledAt > 0 && settledAt <= 8, `[51] 0.5 行程 ${settledAt} 帧内到位（≈${Math.round(settledAt * 16.7)}ms；录屏实测约 67ms）`);
+    ok(maxX - 0.5 <= 0.02, `[51] 过冲 ${((maxX - 0.5) * 100).toFixed(2)}% ≤ 2%（无回弹）`);
+    near(m.x, 0.5, "[51] 最终精确落在目标", 1e-3);
+  }
+
+  // ③ 行为：不跟手 + 一档一格
+  {
+    const pctOf = (c) => {
+      const mm = /\+ ([\d.]+) \*/.exec(c.react.find("knob").style.left || "");
+      return mm ? parseFloat(mm[1]) : 0;
+    };
+    const pump = async (c, n) => { for (let i = 0; i < n; i += 1) { c.flushFrames(1, 16); for (let k = 0; k < 6; k += 1) await Promise.resolve(); } };
+
+    const c = await setup({ reducedMotion: true });
+    c.internals.writeSettings({ motion: "fast" });
+    for (let k = 0; k < 8; k += 1) await Promise.resolve();
+
+    track(c.react).fire("onPointerDown", { clientX: 60, pointerId: 1 }); // 20% → 最近档 index 1
+    await pump(c, 24);
+    near(pctOf(c), 1 / 3, "[51] 按下后停在档位格（1/3），而不是指针的 20%（不跟手）", 2e-2);
+
+    track(c.react).fire("onPointerMove", { clientX: 75, buttons: 1 });  // 25%，档内
+    await pump(c, 12);
+    near(pctOf(c), 1 / 3, "[51] 档内小幅移动 → 旋钮不动（一格一格）", 2e-2);
+
+    track(c.react).fire("onPointerMove", { clientX: 200, buttons: 1 }); // 66.7% → 越过判定线
+    let frames = 0;
+    for (let i = 0; i < 30; i += 1) {
+      c.flushFrames(1, 16);
+      for (let k = 0; k < 6; k += 1) await Promise.resolve();
+      frames += 1;
+      if (Math.abs(pctOf(c) - 2 / 3) < 1e-3) break;
+    }
+    ok(frames <= 10, `[51] 切档后 ${frames} 帧内吸附到 2/3（≈${Math.round(frames * 16.7)}ms）`);
+    near(pctOf(c), 2 / 3, "[51] 落在档位格上（2/3）", 2e-2);
+    track(c.react).fire("onPointerUp", {});
+    await pump(c, 8);
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════ */
