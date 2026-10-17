@@ -357,6 +357,14 @@ function schemaDefaults() {
       return out;
     }
 
+function cacheGet() { return (typeof settingsCache === "undefined") ? null : settingsCache; }
+
+function cacheSet(value) { if (typeof settingsCache !== "undefined") settingsCache = value; }
+
+function settingsKey() { return (typeof SETTINGS_KEY === "undefined") ? "dsh-codex-effort-slider.settings" : SETTINGS_KEY; }
+
+function settingsEventName() { return (typeof SETTINGS_EVENT === "undefined") ? "dsh-codex-effort-slider:settings" : SETTINGS_EVENT; }
+
 function motionMode() {
       var mode = readSettings().motion;
       return mode === "quick" || mode === "fast" ? mode : "full";
@@ -389,6 +397,9 @@ var KNOB_RADIUS = 14;
 var FILL_RADIUS = "border-radius:14px 0 0 14px";
 var SETTINGS_SCHEMA = [{"key":"motion","kind":"radio","group":"动画效果","label":"动画效果","default":"full","options":[{"value":"fast","label":"快速动画"},{"value":"quick","label":"简洁动画"},{"value":"full","label":"完整动画"}]},{"key":"reachedTicks","kind":"radio","group":"已到达档位的刻度点","label":"刻度点","default":"hidden","options":[{"value":"highlight","label":"亮白显示"},{"value":"dim","label":"与未到达同色"},{"value":"hidden","label":"隐藏"}]}];
 var SETTINGS_VERSION = 3;
+var SETTINGS_KEY = "dsh-codex-effort-slider.settings";
+var SETTINGS_EVENT = "dsh-codex-effort-slider:settings";
+var settingsCache = null;
 var MOTION = {"K":20,"A":120,"k":40,"amax":240,"vmax":6,"epsX":0.0015,"epsV":0.02};
 var MOTION_REDUCED = {"K":120,"A":600,"k":200,"amax":1200,"vmax":20,"epsX":0.0015,"epsV":0.02};
 var MOTION_FAST = {"K":60,"A":500,"k":60,"amax":300,"vmax":10,"epsX":0.0015,"epsV":0.02};
