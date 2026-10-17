@@ -38,7 +38,8 @@
 | **Off** | ![浅色 Off](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-05.png) | ![深色 Off](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/shot-09.png) |
 
 对比度都算过（最高档的数值文字：白底 **4.23:1**、深色底 **4.02:1**）。
-**不用安装也能先玩**：浏览器打开 [`preview/panel.html`](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/panel.html)，可拖动、切浅深色、切 4/2/6 档模型
+**不用安装也能先玩**：**[▶ 在线试玩](https://htmlpreview.github.io/?https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/panel.html)** —— 或者下载仓库后**双击本地** `preview/panel.html`。可拖动、切浅深色、切 4/2/6 档模型，动画三档（快速 / 简洁 / 完整）都能试。
+> ⚠️ 直接点 `raw.githubusercontent.com` 的链接只会看到**源码** ✗ —— 它以文本形式返回文件；要看效果请用上面的「在线试玩」或本地打开。
 （另有脚本生成的实现示意图：[`preview/seat-color.png`](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/seat-color.png)、[`preview/distribution.png`](https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/distribution.png)）。
 
 它不新增入口：**直接改造官方模型菜单里的「推理等级」那一行** ——
