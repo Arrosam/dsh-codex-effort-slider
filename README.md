@@ -14,7 +14,7 @@
 2. **右键**：在**滑条上点右键**打开设置面板 👇
 3. 设置**即时生效并记住**；出问题时点一下「复制诊断」把逐帧记录导出。
 
-<img src="https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/context-menu.png" width="330" alt="右键滑条打开设置面板：动画（简洁/完整）、已到达档位的刻度点（亮白/同色/隐藏）、复制诊断 / 恢复默认 / 关闭">
+<img src="https://raw.githubusercontent.com/Microqian2th/dsh-codex-effort-slider/main/preview/screenshots/context-menu.png" width="330" alt="右键滑条打开设置面板：动画效果（快速/简洁/完整，三档都不受系统减少动态影响）、已到达档位的刻度点（亮白/同色/隐藏）、复制诊断 / 恢复默认 / 关闭">
 
 | 设置项 | 可选 | 说明 |
 |---|---|---|
