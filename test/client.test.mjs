@@ -1530,7 +1530,8 @@ section("22. 松手手感：两种模式都是动过去而不是瞬跳");
     if (mode === "full") {
       ok(moved >= 1, `[22] full：松手是"动过去"的（${moved} 帧有位移，不是瞬跳）`);
     } else {
-      ok(moved <= 2, `[22] quick：简洁动画几乎瞬跳（只动了 ${moved} 帧，符合预期）`);
+      // 简洁档改成稳定参数后是"几帧到位"（旧的紧参数会 33% 振荡，见 [52]）
+      ok(moved >= 2 && moved <= 12, `[22] quick：简洁动画几帧到位且不瞬跳（${moved} 帧有位移）`);
     }
     ok(reversals <= 1, `[22] ${mode}：松手过程中不来回抖（折返 ${reversals} 次）`);
   }
@@ -1660,6 +1661,47 @@ section("51. 快速动画（Codex 手感）：不跟手 + 一档一格 + 约 67m
     track(c.react).fire("onPointerUp", {});
     await pump(c, 8);
   }
+}
+
+section("52. 三组动画参数都必须稳定（不许 bang-bang 自激振荡）—— issue #12 回归");
+{
+  const I = (await setup()).internals;
+  const sets = [["完整", I.MOTION], ["简洁", I.MOTION_REDUCED], ["快速", I.MOTION_FAST]];
+
+  // ① 硬判据（经验阈值 0.7）：amax × (1/60) ≤ 0.7 × vmax
+  //    （1.1.2 的旧简洁参数是 20 vs 20 → 一帧内速度可从 +vmax 翻到 -vmax → 位置每帧摆 ±33% ✗）
+  for (const [name, p] of sets) {
+    ok(p.amax / 60 <= 0.7 * p.vmax + 1e-9, `[52] ${name}：amax/60=${(p.amax / 60).toFixed(2)} ≤ 0.7·vmax=${(0.7 * p.vmax).toFixed(2)}`);
+  }
+
+  // ② 仿真各方向/各距离：单帧位移、过冲、收敛帧数都要达标
+  const cases = [[0, 1], [1, 0], [0.3, 0.5], [0.5, 1 / 3]];
+  for (const [name, p] of sets) {
+    for (const [x0, target] of cases) {
+      const m = { x: x0, v: 0, a: 0, target };
+      let maxStep = 0;
+      let maxOvershoot = 0;
+      let settledAt = -1;
+      let prev = m.x;
+      for (let i = 1; i <= 120; i += 1) {
+        I.motionStep(m, 1 / 60, p);
+        maxStep = Math.max(maxStep, Math.abs(m.x - prev));
+        prev = m.x;
+        const over = target > x0 ? m.x - target : target - m.x;
+        if (over > maxOvershoot) maxOvershoot = over;
+        if (settledAt < 0 && I.motionSettled(m, p)) settledAt = i;
+      }
+      const tag = `[52] ${name} ${x0}→${target.toFixed(3)}`;
+      ok(maxStep <= 0.25, `${tag}：单帧最大位移 ${(maxStep * 100).toFixed(1)}% ≤ 25%（不抽搐）`);
+      ok(maxOvershoot <= 0.03, `${tag}：过冲 ${(maxOvershoot * 100).toFixed(2)}% ≤ 3%`);
+      ok(settledAt > 0 && settledAt <= 90, `${tag}：${settledAt} 帧内收敛`);
+      near(m.x, target, `${tag}：最终精确落点`, 1e-3);
+    }
+  }
+
+  // ③ 把发病参数写进测试：它必须被判据拦住（说明判据真的能防住这个 bug）
+  const BAD = { K: 120, A: 600, k: 200, amax: 1200, vmax: 20 };
+  ok(BAD.amax / 60 > 0.5 * BAD.vmax, "[52] 1.1.2 的旧简洁参数不满足稳定判据（正是 issue #12 的根因）");
 }
 
 /* ══════════════════════════════════════════════════════════════════════ */
