@@ -269,6 +269,15 @@ function motionStep(m, dt, p) {
       m.a = clampAbs(p.k * (vDesired - m.v), p.amax);
       // 3) 积分
       m.v = clampAbs(m.v + m.a * dt, p.vmax);
+      // 3b) **防过冲**（issue #12 的另一半）：这一帧按速度要走出的位移如果已经 ≥ 剩余距离，
+      //     说明目标就在这一帧之内 —— 直接精确落在目标上。
+      //     否则帧量化会让人冲到目标外侧再弹回来（实测快速档回弹 3.33%，视频里只有 ±1%）。
+      if (e !== 0 && Math.abs(m.v * dt) >= Math.abs(e)) {
+        m.x = m.target;
+        m.v = 0;
+        m.a = 0;
+        return m;
+      }
       var xRaw = m.x + m.v * dt;
       var xClamped = xRaw < 0 ? 0 : (xRaw > 1 ? 1 : xRaw);
       // 4) 边界：位置夹住时**必须同时停住朝外的速度**，否则会在端点顶住抖动
@@ -401,7 +410,7 @@ var SETTINGS_KEY = "dsh-codex-effort-slider.settings";
 var SETTINGS_EVENT = "dsh-codex-effort-slider:settings";
 var settingsCache = null;
 var MOTION = {"K":20,"A":120,"k":40,"amax":240,"vmax":6,"epsX":0.0015,"epsV":0.02};
-var MOTION_REDUCED = {"K":120,"A":600,"k":200,"amax":1200,"vmax":20,"epsX":0.0015,"epsV":0.02};
+var MOTION_REDUCED = {"K":40,"A":300,"k":40,"amax":200,"vmax":7,"epsX":0.0015,"epsV":0.02};
 var MOTION_FAST = {"K":60,"A":500,"k":60,"amax":300,"vmax":10,"epsX":0.0015,"epsV":0.02};
 var DETENT_THIRD = 0.3333333333333333;
 var RELEASE_PROJECT_S = 0;
